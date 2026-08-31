@@ -1,93 +1,141 @@
+"""
+python_parser.py
+────────────────
+Thin adapter that drives ``custom_ast_parser.py`` (the full-featured Python
+AST walker) and flattens its rich node tree into the ``FileModel`` Pydantic
+schema consumed by the rest of Module 2.
+
+Why this two-layer design?
+──────────────────────────
+* ``custom_ast_parser.py`` produces a full, JSON-serialisable tree that
+  preserves every construct (base classes, return annotations, middleware,
+  exception handlers, comprehensions …).  That tree is the right input for
+  future graph-traversal or LLM-context features.
+* ``FileModel`` is a deliberately shallow contract agreed with Module 3
+  (Neo4j).  This adapter bridges the gap — no other file needs to know about
+  the internal tree format.
+"""
+
 import ast
 from typing import List
+
 from app.schemas.project import FileModel, ClassModel, FunctionModel, ApiRouteModel
+from app.analyzer.code_analyzer.custom_ast_parser import (
+    parse_code,
+    ModuleNode,
+    ImportNode,
+    ImportFromNode,
+    ClassDefNode,
+    FunctionDefNode,
+    FastAPIRouteNode,
+    ArgumentNode,
+)
 
-class PythonASTVisitor(ast.NodeVisitor):
-    def __init__(self, filename: str):
-        self.filename = filename
-        self.classes: List[ClassModel] = []
-        self.functions: List[FunctionModel] = []
-        self.api_routes: List[ApiRouteModel] = []
-        self.imports: List[str] = []
 
-    def visit_Import(self, node: ast.Import):
-        for alias in node.names:
-            self.imports.append(alias.name)
-        self.generic_visit(node)
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
-    def visit_ImportFrom(self, node: ast.ImportFrom):
-        module = node.module or ""
-        for alias in node.names:
-            self.imports.append(f"{module}.{alias.name}" if module else alias.name)
-        self.generic_visit(node)
+def _depends_from_args(args: List[ArgumentNode]) -> List[str]:
+    """
+    Extract the injected function names from ``Depends(...)`` default values.
 
-    def visit_ClassDef(self, node: ast.ClassDef):
-        methods = []
-        for body_item in node.body:
-            if isinstance(body_item, ast.FunctionDef) or isinstance(body_item, ast.AsyncFunctionDef):
-                methods.append(body_item.name)
-        
-        self.classes.append(ClassModel(name=node.name, methods=methods))
-        # Do NOT call generic_visit here — we've already extracted methods manually.
-        # Calling it would cause the walker to recurse into the class body and
-        # re-invoke visit_FunctionDef for each method, leaking them into top-level functions.
+    ``custom_ast_parser`` stores the default as an unparsed string, e.g.
+    ``"Depends(get_db)"``.  We pull the inner symbol out with a simple parse.
+    """
+    deps: List[str] = []
+    for arg in args:
+        default = arg.default or ""
+        # Match Depends(<symbol>)  — handles both name and dotted attr forms
+        if default.startswith("Depends(") and default.endswith(")"):
+            inner = default[len("Depends("):-1].strip()
+            if inner:
+                deps.append(inner)
+    return deps
 
-    def visit_FunctionDef(self, node: ast.FunctionDef):
-        self._handle_function(node)
-        self.generic_visit(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
-        self._handle_function(node)
-        self.generic_visit(node)
+def _walk_module(module_node: ModuleNode):
+    """
+    Walk the custom AST module node and extract the four categories needed
+    for FileModel.  Returns (classes, functions, api_routes, imports).
+    """
+    classes: List[ClassModel] = []
+    functions: List[FunctionModel] = []
+    api_routes: List[ApiRouteModel] = []
+    imports: List[str] = []
 
-    def _handle_function(self, node):
-        args = [arg.arg for arg in node.args.args]
-        decorators = []
-        
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Call):
-                # e.g. @app.get("/path")
-                if isinstance(decorator.func, ast.Attribute):
-                    if isinstance(decorator.func.value, ast.Name):
-                        dec_name = f"{decorator.func.value.id}.{decorator.func.attr}"
-                    else:
-                        dec_name = decorator.func.attr
-                    decorators.append(dec_name)
-                    
-                    # Detect FastAPI routes
-                    if isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "app" and decorator.func.attr in ["get", "post", "put", "delete", "patch"]:
-                        if decorator.args and isinstance(decorator.args[0], ast.Constant):
-                            path = decorator.args[0].value
-                            self.api_routes.append(ApiRouteModel(
-                                method=decorator.func.attr.upper(),
-                                path=path,
-                                function_name=node.name
-                            ))
-            elif isinstance(decorator, ast.Attribute):
-                if isinstance(decorator.value, ast.Name):
-                    dec_name = f"{decorator.value.id}.{decorator.attr}"
-                else:
-                    dec_name = decorator.attr
-                decorators.append(dec_name)
-            elif isinstance(decorator, ast.Name):
-                decorators.append(decorator.id)
-                
-        self.functions.append(FunctionModel(name=node.name, arguments=args, decorators=decorators))
+    # FastAPI route nodes are attached directly as children of ModuleNode
+    # by custom_ast_parser (not nested under their FunctionDefNode).
+    fastapi_routes_by_func: dict = {}
+    for child in module_node.children:
+        if isinstance(child, FastAPIRouteNode):
+            fastapi_routes_by_func[child.function_name] = child
+
+    for child in module_node.children:
+
+        # ── Imports ──────────────────────────────────────────────────────
+        if isinstance(child, ImportNode):
+            imports.extend(child.names)
+
+        elif isinstance(child, ImportFromNode):
+            module = child.module or ""
+            for name in child.names:
+                imports.append(f"{module}.{name}" if module else name)
+
+        # ── Classes ───────────────────────────────────────────────────────
+        elif isinstance(child, ClassDefNode):
+            methods: List[str] = []
+            for body_child in child.children:
+                if isinstance(body_child, FunctionDefNode):
+                    methods.append(body_child.name)
+            classes.append(ClassModel(name=child.name, methods=methods))
+
+        # ── Top-level functions ───────────────────────────────────────────
+        elif isinstance(child, FunctionDefNode):
+            depends_on = _depends_from_args(child.args)
+
+            functions.append(FunctionModel(
+                name=child.name,
+                arguments=[a.arg for a in child.args],
+                decorators=child.decorators,
+                depends_on=depends_on,
+            ))
+
+        # ── FastAPI routes (add to api_routes list) ───────────────────────
+        elif isinstance(child, FastAPIRouteNode):
+            api_routes.append(ApiRouteModel(
+                method=child.method,
+                path=child.path,
+                function_name=child.function_name,
+            ))
+
+    return classes, functions, api_routes, imports
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def parse_python_code(code: str, filename: str = "unknown.py") -> FileModel:
+    """
+    Parse Python source into a ``FileModel``.
+
+    Internally uses ``custom_ast_parser.parse_code()`` for the full AST walk,
+    then flattens the result to the schema contract.
+    """
     try:
-        tree = ast.parse(code, filename=filename)
-        visitor = PythonASTVisitor(filename)
-        visitor.visit(tree)
-        
+        module_node = parse_code(code)
+        classes, functions, api_routes, imports = _walk_module(module_node)
+
         return FileModel(
             file=filename,
             language="python",
-            classes=visitor.classes,
-            functions=visitor.functions,
-            api_routes=visitor.api_routes,
-            imports=visitor.imports
+            classes=classes,
+            functions=functions,
+            api_routes=api_routes,
+            imports=imports,
         )
+
     except Exception as e:
         print(f"Error parsing python code in {filename}: {e}")
         return FileModel(
@@ -96,5 +144,5 @@ def parse_python_code(code: str, filename: str = "unknown.py") -> FileModel:
             classes=[],
             functions=[],
             api_routes=[],
-            imports=[]
+            imports=[],
         )
