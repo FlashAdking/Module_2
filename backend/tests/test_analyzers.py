@@ -180,7 +180,8 @@ def test_map_dependencies_internal():
         FileModel(
             file="app/main.py", language="python",
             classes=[], functions=[], api_routes=[],
-            imports=["app.models.user", "fastapi"],
+            # "app.models.user.SomeClass" → resolves to module "app.models.user"
+            imports=["app.models.user.SomeClass", "fastapi.FastAPI"],
         ),
         FileModel(
             file="app/models/user.py", language="python",
@@ -191,8 +192,10 @@ def test_map_dependencies_internal():
     internal = [e for e in edges if e.kind == "INTERNAL"]
     external = [e for e in edges if e.kind == "EXTERNAL"]
 
+    # INTERNAL: target_module is the matched module path, not the full symbol
     assert any(e.target_module == "app.models.user" for e in internal)
-    assert any(e.target_module == "fastapi" for e in external)
+    # EXTERNAL: target_module is the full import string as-is
+    assert any(e.target_module == "fastapi.FastAPI" for e in external)
 
 
 def test_map_depends_edges():

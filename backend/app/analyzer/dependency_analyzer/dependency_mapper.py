@@ -48,8 +48,10 @@ def _resolve_import(imp: str, module_index: Dict[str, str]) -> tuple[str, str]:
     for length in range(len(parts), 0, -1):
         candidate = ".".join(parts[:length])
         if candidate in module_index:
-            return "INTERNAL", module_index[candidate]
-    return "EXTERNAL", ""
+            # Return the matched module path (without trailing symbol names)
+            # so "app.services.user.UserService" → candidate "app.services.user"
+            return "INTERNAL", module_index[candidate], candidate
+    return "EXTERNAL", "", imp
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +72,7 @@ def map_dependencies(files: List[FileModel]) -> List[DependencyEdge]:
 
     for f in files:
         for imp in f.imports:
-            kind, resolved = _resolve_import(imp, module_index)
+            kind, resolved, target_mod = _resolve_import(imp, module_index)
             key = (f.file, imp)
             if key in seen:
                 continue
@@ -82,7 +84,9 @@ def map_dependencies(files: List[FileModel]) -> List[DependencyEdge]:
 
             edges.append(DependencyEdge(
                 source_file=f.file,
-                target_module=imp,
+                # INTERNAL: use matched module path ("app.services.user")
+                # EXTERNAL: use full import string ("fastapi.FastAPI") — the symbol IS the identifier
+                target_module=target_mod,
                 kind=kind,
                 resolved_file=resolved if resolved else None,
             ))

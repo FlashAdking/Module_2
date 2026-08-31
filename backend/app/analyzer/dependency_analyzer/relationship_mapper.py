@@ -36,7 +36,9 @@ _STOP_WORDS: Set[str] = {
     # they are high-signal tokens in code symbol names (create_user, UserService…)
 }
 
-_MIN_SCORE = 0.15  # minimum keyword overlap ratio to record a link
+_MIN_SCORE = 0.6  # minimum keyword overlap ratio to record a link
+                  # 0.6 requires ≥60% of symbol tokens to match the requirement,
+                  # preventing weak single-token matches (e.g. "user" alone)
 
 
 def _tokenise(text: str) -> Set[str]:
@@ -47,19 +49,28 @@ def _tokenise(text: str) -> Set[str]:
 
 def _tokens_match(a: str, b: str) -> bool:
     """
-    True when two tokens are the same or one is a prefix/stem of the other.
+    True when two tokens are the same or share a common stem prefix.
 
-    Examples that match:
-        create  ↔  creating   (creating.startswith("create"))
-        user    ↔  users      (users.startswith("user"))
-        list    ↔  listing    (listing.startswith("list"))
+    Stem matching: "create" and "creation" share prefix "creat" (len 5 >= 4).
+    Both tokens must be at least 4 chars to avoid false positives.
 
-    Both tokens must be at least 4 chars to avoid false positives on short words.
+    Examples:
+        create   ↔  creation   (shared prefix "creat", len 5)
+        create   ↔  creating   (shared prefix "creat", len 5)
+        user     ↔  users      (shared prefix "user",  len 4)
+        list     ↔  listing    (shared prefix "list",  len 4)
     """
     if a == b:
         return True
     if len(a) >= 4 and len(b) >= 4:
-        return b.startswith(a) or a.startswith(b)
+        # Find length of common prefix
+        common = 0
+        for ca, cb in zip(a, b):
+            if ca == cb:
+                common += 1
+            else:
+                break
+        return common >= 4
     return False
 
 
@@ -87,7 +98,13 @@ def _symbol_tokens(symbol_name: str) -> Set[str]:
     return _camel_to_tokens(symbol_name)
 
 
+def _req_title_tokens(req: RequirementModel) -> Set[str]:
+    """Tokens from the requirement title only — used for single-token symbol matching."""
+    return _tokenise(req.title)
+
+
 def _req_tokens(req: RequirementModel) -> Set[str]:
+    """Tokens from the full requirement text (title + description + AC)."""
     text = f"{req.title} {req.description} {' '.join(req.acceptance_criteria)}"
     return _tokenise(text)
 
@@ -101,24 +118,45 @@ def map_code_to_requirements(
     requirements: List[RequirementModel],
 ) -> List[CodeRequirementLink]:
     """
-    For each function and class in every file, compute keyword overlap with
-    each requirement and emit a link when the score meets the threshold.
+    For each function, method, and class in every file, compute keyword overlap
+    with each requirement and emit a link when the score meets the threshold.
 
     Score = |symbol_tokens ∩ req_tokens| / |symbol_tokens|
     (how much of the symbol name is "explained" by the requirement text)
     """
     links: List[CodeRequirementLink] = []
-
     req_token_cache = {r.requirement_id: _req_tokens(r) for r in requirements}
+    req_title_cache = {r.requirement_id: _req_title_tokens(r) for r in requirements}
 
     if not requirements:
         return links
 
     for f in files:
-        symbols: List[tuple] = (
-            [(cls.name, "class") for cls in f.classes]
-            + [(func.name, "function") for func in f.functions]
-        )
+        # Test files exercise requirements indirectly — they are NOT
+        # first-class requirement implementations, so skip them entirely.
+        if _is_test_file(f.file):
+            continue
+
+        # Build symbol list: class names + methods + top-level functions.
+        # Use a set to deduplicate symbols that appear both as a class method
+        # and as a top-level function (e.g. create_user in main.py AND UserService).
+        seen_names: set = set()
+        symbols: List[tuple] = []
+
+        for cls in f.classes:
+            if cls.name not in seen_names:
+                symbols.append((cls.name, "class"))
+                seen_names.add(cls.name)
+            # Include each method as its own symbol
+            for method in cls.methods:
+                if method not in seen_names:
+                    symbols.append((method, "function"))
+                    seen_names.add(method)
+
+        for func in f.functions:
+            if func.name not in seen_names:
+                symbols.append((func.name, "function"))
+                seen_names.add(func.name)
 
         for symbol_name, symbol_type in symbols:
             sym_toks = _symbol_tokens(symbol_name)
@@ -130,6 +168,15 @@ def map_code_to_requirements(
                 overlap = _overlap(sym_toks, req_toks)
                 if not overlap:
                     continue
+
+                # Guard: single-token symbols (e.g. class User) are too generic.
+                # Require the token to appear in the requirement TITLE, not just
+                # anywhere in the AC body where "user" is mentioned casually.
+                if len(sym_toks) == 1:
+                    tok = next(iter(sym_toks))
+                    if tok not in req_title_cache[req.requirement_id]:
+                        continue
+
                 score = round(len(overlap) / len(sym_toks), 3)
                 if score >= _MIN_SCORE:
                     links.append(CodeRequirementLink(
