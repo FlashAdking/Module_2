@@ -154,6 +154,46 @@ def map_dependencies(files: List[FileModel]) -> List[DependencyEdge]:
     return edges
 
 
+def _resolve_through_init(
+    symbol: str,
+    resolved_file: str,
+    files: List[FileModel],
+    module_index: Dict[str, str],
+    _visited: set = None,
+) -> str:
+    """
+    If `resolved_file` is an __init__.py that re-exports `symbol`,
+    follow the chain until we find the actual definition file.
+    Returns the deepest resolved file path.
+    """
+    if _visited is None:
+        _visited = set()
+
+    if resolved_file in _visited:
+        return resolved_file
+    _visited.add(resolved_file)
+
+    if not resolved_file.endswith("__init__.py"):
+        return resolved_file
+
+    # Find the __init__.py FileModel
+    init_file = next((f for f in files if f.file == resolved_file), None)
+    if init_file is None:
+        return resolved_file
+
+    # Search its imports for the symbol
+    for imp in init_file.imports:
+        parts = imp.split(" as ")
+        alias = parts[1].strip() if len(parts) > 1 else parts[0].split(".")[-1]
+        real_imp = parts[0].strip()
+        if alias == symbol:
+            kind, next_resolved, _ = _resolve_import(real_imp, resolved_file, module_index)
+            if kind == "INTERNAL" and next_resolved and next_resolved != resolved_file:
+                return _resolve_through_init(symbol, next_resolved, files, module_index, _visited)
+
+    return resolved_file
+
+
 def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
     """
     Produce FastAPI ``Depends()`` injection edges.
@@ -195,6 +235,8 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                         if alias == dep:
                             kind, resolved, target_mod = _resolve_import(real_imp, f.file, module_index)
                             if kind == "INTERNAL" and resolved:
+                                # Follow re-export chains through __init__.py
+                                resolved = _resolve_through_init(dep, resolved, files, module_index)
                                 target_file = resolved
                                 target_func_name = real_imp.split(".")[-1]
                                 break
@@ -222,3 +264,4 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                 ))
 
     return edges
+
