@@ -1,0 +1,5 @@
+python-dotenv
+tree_sitter_javascript
+pydentic
+tree_sitter
+neo4j
