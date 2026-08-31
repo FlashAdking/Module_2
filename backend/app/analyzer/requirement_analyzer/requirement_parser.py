@@ -10,11 +10,13 @@ _EXPLICIT_ID_RE = re.compile(
 )
 
 # A line is an "Acceptance Criteria header" if it matches this pattern.
-_AC_HEADER_RE = re.compile(r'^\s*acceptance\s+criteria\s*:?\s*$', re.IGNORECASE)
+_AC_HEADER_RE = re.compile(r'^\s*(?:acceptance\s+criteria|ac)\s*:?\s*$', re.IGNORECASE)
 
 # Bullet prefix patterns that should be stripped from AC items.
 # Handles: "- item", "* item", "• item", "1. item", "1) item"
 _BULLET_RE = re.compile(r'^(?:[-*•✓✗]\s+|\d+[.)]\s*)')
+
+_TITLE_PREFIX_RE = re.compile(r'^(?:#+\s+|\d+\.\s+)')
 
 
 def _split_into_blocks(text: str) -> List[str]:
@@ -25,20 +27,30 @@ def _split_into_blocks(text: str) -> List[str]:
     lines = text.splitlines()
     blocks: List[List[str]] = []
     current: List[str] = []
+    in_ac = False
 
     for line in lines:
+        stripped = line.strip()
         # Blank line → flush current block, start a new one
-        if not line.strip():
+        if not stripped:
             if current:
                 blocks.append(current)
                 current = []
+                in_ac = False
             continue
 
-        # If this line starts an explicit ID and we already have content,
+        if _AC_HEADER_RE.match(stripped):
+            in_ac = True
+
+        # If this line starts an explicit ID or a title prefix (not in AC),
         # flush so each requirement becomes its own block.
-        if _EXPLICIT_ID_RE.match(line.strip()) and current:
+        is_new_req = _EXPLICIT_ID_RE.match(stripped) or (not in_ac and _TITLE_PREFIX_RE.match(stripped))
+        if is_new_req and current:
             blocks.append(current)
             current = []
+            in_ac = False
+            if _AC_HEADER_RE.match(stripped):
+                in_ac = True
 
         current.append(line)
 
@@ -91,15 +103,18 @@ def parse_requirements_text(
             # Normalise: REQ001 → REQ-001 (insert hyphen if missing)
             req_id = re.sub(r'^([A-Z]+)(\d+)$', r'\1-\2', req_id)
             # Strip the ID token from the title
-            title_raw = first_line[id_match.end():].strip().strip(':- ')
+            title_raw = first_line[id_match.end():].strip()
         else:
             req_id = f"REQ-{seq:03d}"
             seq += 1
             # Strip any upstream ID token so it doesn't pollute the title
             if id_match:
-                title_raw = first_line[id_match.end():].strip().strip(':- ')
+                title_raw = first_line[id_match.end():].strip()
             else:
-                title_raw = first_line.strip(':- ')
+                title_raw = first_line.strip()
+                
+        # Clean title prefix (e.g. "1. ", "## ") and trailing colons/dashes
+        title_raw = _TITLE_PREFIX_RE.sub('', title_raw).strip(':- ')
 
         title = title_raw if title_raw else f"Requirement {req_id}"
 

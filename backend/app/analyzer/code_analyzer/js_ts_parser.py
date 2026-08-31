@@ -90,8 +90,30 @@ def parse_js_ts_code(code: str, filename: str, language_str: str = 'javascript')
                     for child in node.children:
                         traverse(child)
                     return
+            # Extract arguments
+            arguments = []
             
-            functions.append(FunctionModel(name=name, arguments=[], decorators=[]))
+            if node.type == 'arrow_function':
+                # Check for parameter without parens: e.g. name => {}
+                for child in node.children:
+                    if child.type == 'identifier':
+                        arguments.append(extract_node_text(child, source_bytes))
+                        break
+            
+            params_node = node.child_by_field_name('parameters')
+            if params_node and params_node.type == 'formal_parameters':
+                for child in params_node.children:
+                    if child.type == 'identifier':
+                        arguments.append(extract_node_text(child, source_bytes))
+                    elif child.type in ['required_parameter', 'optional_parameter']:
+                        # Try to find the identifier child (usually the parameter name)
+                        ident = next((c for c in child.children if c.type == 'identifier'), None)
+                        if ident:
+                            arguments.append(extract_node_text(ident, source_bytes))
+                    elif child.type in ['array_pattern', 'object_pattern']:
+                        arguments.append("<pattern>")
+            
+            functions.append(FunctionModel(name=name, arguments=arguments, decorators=[]))
 
         # NOTE: Frontend JS/TS files CONSUME APIs — they do not define server routes.
         # axios/fetch calls are intentionally NOT added to api_routes.

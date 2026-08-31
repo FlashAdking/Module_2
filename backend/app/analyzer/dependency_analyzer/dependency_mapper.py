@@ -1,4 +1,5 @@
 from typing import List, Dict, Set
+import os
 from app.schemas.project import FileModel, DependencyEdge, DependsEdge
 
 
@@ -8,14 +9,11 @@ from app.schemas.project import FileModel, DependencyEdge, DependsEdge
 
 def _build_module_index(files: List[FileModel]) -> Dict[str, str]:
     """
-    Build a lookup: dotted-module-path → project-relative file path.
+    Build a lookup for resolving imports to project files.
 
-    Example:
-        "app/models/user.py"  →  {"app.models.user": "app/models/user.py",
-                                   "app.models":       "app/models/user.py"}
-
-    This lets us resolve import strings like ``"app.models.user"`` back to
-    real files inside the project.
+    Provides:
+      - Dotted lookup for Python (e.g. 'app.models.user')
+      - Path lookup for JS/TS (e.g. 'frontend/services/user')
     """
     index: Dict[str, str] = {}
     for f in files:
@@ -25,25 +23,41 @@ def _build_module_index(files: List[FileModel]) -> Dict[str, str]:
             path = path[2:]
         # Strip extension
         without_ext = path.rsplit(".", 1)[0]
-        # Convert slashes → dots  (app/models/user → app.models.user)
+        
+        # 1. Path-based lookup (JS/TS relative imports)
+        index[without_ext] = f.file
+        # Map frontend/services/user/index to frontend/services/user
+        if without_ext.endswith("/index"):
+            index[without_ext[:-6]] = f.file
+
+        # 2. Dotted lookup (Python)
         dotted = without_ext.replace("/", ".")
         index[dotted] = f.file
-        # Also register parent packages so "from app.models import user" hits
-        parts = dotted.split(".")
-        for i in range(1, len(parts)):
-            partial = ".".join(parts[:i])
-            if partial not in index:
-                index[partial] = f.file
+        # Map app.services.__init__ to app.services
+        if dotted.endswith(".__init__"):
+            index[dotted[:-9]] = f.file
 
     return index
 
 
-def _resolve_import(imp: str, module_index: Dict[str, str]) -> tuple[str, str]:
+def _resolve_import(imp: str, source_file: str, module_index: Dict[str, str]) -> tuple[str, str, str]:
     """
-    Returns (kind, resolved_file).
+    Returns (kind, resolved_file, target_module).
     kind = "INTERNAL" if the import matches a project file, "EXTERNAL" otherwise.
     """
-    # Try the full import path first, then progressively shorter prefixes
+    # 1. JS/TS Relative imports
+    if imp.startswith("."):
+        source_dir = os.path.dirname(source_file).replace("\\", "/")
+        resolved_path = os.path.normpath(os.path.join(source_dir, imp)).replace("\\", "/")
+        resolved_path = resolved_path.rstrip("/")
+        
+        if resolved_path in module_index:
+            return "INTERNAL", module_index[resolved_path], imp
+        if f"{resolved_path}/index" in module_index:
+            return "INTERNAL", module_index[f"{resolved_path}/index"], imp
+        return "EXTERNAL", "", imp
+
+    # 2. Python dotted imports
     parts = imp.split(".")
     for length in range(len(parts), 0, -1):
         candidate = ".".join(parts[:length])
@@ -72,7 +86,7 @@ def map_dependencies(files: List[FileModel]) -> List[DependencyEdge]:
 
     for f in files:
         for imp in f.imports:
-            kind, resolved, target_mod = _resolve_import(imp, module_index)
+            kind, resolved, target_mod = _resolve_import(imp, f.file, module_index)
             key = (f.file, imp)
             if key in seen:
                 continue

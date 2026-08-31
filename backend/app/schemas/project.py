@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 
 # --- INPUT FROM MODULE 1 (Profiler) ---
@@ -15,10 +15,10 @@ class ClassModel(BaseModel):
 
 class FunctionModel(BaseModel):
     name: str
-    arguments: List[str]
-    decorators: List[str]
+    arguments: List[str] = Field(default_factory=list)
+    decorators: List[str] = Field(default_factory=list)
     # FastAPI Depends() injections extracted from function arguments
-    depends_on: List[str] = []
+    depends_on: List[str] = Field(default_factory=list)
 
 class ApiRouteModel(BaseModel):
     method: str
@@ -28,10 +28,10 @@ class ApiRouteModel(BaseModel):
 class FileModel(BaseModel):
     file: str
     language: str
-    classes: List[ClassModel]
-    functions: List[FunctionModel]
-    api_routes: List[ApiRouteModel]
-    imports: List[str]
+    classes: List[ClassModel] = Field(default_factory=list)
+    functions: List[FunctionModel] = Field(default_factory=list)
+    api_routes: List[ApiRouteModel] = Field(default_factory=list)
+    imports: List[str] = Field(default_factory=list)
 
 class RequirementModel(BaseModel):
     requirement_id: str
@@ -63,6 +63,7 @@ class CodeRequirementLink(BaseModel):
     symbol_type: str     # "function" | "class"
     requirement_id: str
     match_score: float   # 0.0–1.0, ratio of matched keywords
+    evidence: List[str] = Field(default_factory=list)
 
 class CodeTestLink(BaseModel):
     """Associates a test function with the production symbol it tests."""
@@ -71,6 +72,7 @@ class CodeTestLink(BaseModel):
     target_file: str
     target_symbol: str
     target_type: str     # "function" | "class"
+    evidence: List[str] = Field(default_factory=list)
 
 # --- OUTPUT FOR MODULE 3 (Knowledge Graph) ---
 class SystemModelOutput(BaseModel):
@@ -78,7 +80,7 @@ class SystemModelOutput(BaseModel):
     files: List[FileModel]
     requirements: List[RequirementModel]
     # Relationship layers — empty lists when nothing is detected
-    dependencies: List[DependencyEdge] = []
-    depends_edges: List[DependsEdge] = []
-    code_requirement_links: List[CodeRequirementLink] = []
-    code_test_links: List[CodeTestLink] = []
+    dependencies: List[DependencyEdge] = Field(default_factory=list)
+    depends_edges: List[DependsEdge] = Field(default_factory=list)
+    code_requirement_links: List[CodeRequirementLink] = Field(default_factory=list)
+    code_test_links: List[CodeTestLink] = Field(default_factory=list)
