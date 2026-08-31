@@ -50,6 +50,7 @@ def _resolve_import(imp: str, source_file: str, module_index: Dict[str, str]) ->
     Returns (kind, resolved_file, target_module).
     kind = "INTERNAL" if the import matches a project file, "EXTERNAL" otherwise.
     """
+    imp = imp.split(" as ")[0].strip()
     # 1. Relative imports (Python and JS/TS)
     if imp.startswith("."):
         # Count leading dots
@@ -180,6 +181,7 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                 seen.add(key)
                 
                 target_file = None
+                target_func_name = dep
                 
                 # 1. Check if the dependency is defined in the same file
                 if any(fn.name == dep for fn in f.functions):
@@ -187,21 +189,36 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                 else:
                     # 2. Check if the dependency is imported
                     for imp in f.imports:
-                        if imp.endswith(f".{dep}") or imp == dep:
-                            kind, resolved, target_mod = _resolve_import(imp, f.file, module_index)
+                        parts = imp.split(" as ")
+                        alias = parts[1].strip() if len(parts) > 1 else parts[0].split(".")[-1]
+                        real_imp = parts[0].strip()
+                        if alias == dep:
+                            kind, resolved, target_mod = _resolve_import(real_imp, f.file, module_index)
                             if kind == "INTERNAL" and resolved:
                                 target_file = resolved
+                                target_func_name = real_imp.split(".")[-1]
                                 break
                     
                     # 3. Fallback: Check if it's defined globally somewhere else
-                    if not target_file and dep in all_funcs_map:
-                        target_file = all_funcs_map[dep]
+                    if not target_file:
+                        if dep in all_funcs_map:
+                            target_file = all_funcs_map[dep]
+                        else:
+                            for class_method, file_path in all_funcs_map.items():
+                                if class_method.endswith(f".{dep}"):
+                                    target_file = file_path
+                                    target_func_name = class_method
+                                    break
+
+                # Ignore external builtins or unknown functions that we cannot resolve internally
+                if not target_file:
+                    continue
 
                 edges.append(DependsEdge(
                     source_file=f.file,
                     source_function=func.name,
                     target_file=target_file,
-                    target_function=dep,
+                    target_function=target_func_name,
                 ))
 
     return edges

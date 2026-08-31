@@ -178,9 +178,34 @@ def map_code_to_requirements(
                 req_toks = req_token_cache[req.requirement_id]
                 req_title_toks = req_title_cache[req.requirement_id]
                 
-                # Guard: single-token symbols (e.g. class User) must match title.
+                # Evaluate route context first to potentially bypass strict symbol-name guards
+                route_score = 0.0
+                route_evidence = []
+                has_route_action_alignment = False
+                
+                if route:
+                    path_toks = _tokenise(route.path)
+                    path_overlap = _overlap(path_toks, req_toks)
+                    if path_overlap:
+                        route_score += 0.2
+                        route_evidence.append(f"API path '{route.path}' matches requirement text")
+                        
+                    method = route.method.upper()
+                    if method in ("POST", "PUT", "PATCH") and any(w in req_toks for w in ["create", "add", "update", "insert", "creation"]):
+                        route_score += 0.2
+                        route_evidence.append(f"HTTP {method} aligns with creation/update intent")
+                        has_route_action_alignment = True
+                    elif method == "GET" and any(w in req_toks for w in ["list", "fetch", "get", "retrieve", "read", "listing"]):
+                        route_score += 0.2
+                        route_evidence.append(f"HTTP GET aligns with listing/fetching intent")
+                        has_route_action_alignment = True
+                    elif method == "DELETE" and any(w in req_toks for w in ["delete", "remove"]):
+                        route_score += 0.2
+                        route_evidence.append(f"HTTP DELETE aligns with deletion intent")
+                        has_route_action_alignment = True
+
                 # Guard: single-token symbols (e.g. class User) must match title exactly.
-                if len(sym_toks) == 1:
+                if len(sym_toks) == 1 and not has_route_action_alignment:
                     tok = next(iter(sym_toks))
                     if not _overlap({tok}, req_title_toks):
                         continue
@@ -190,11 +215,11 @@ def map_code_to_requirements(
                 
                 # Guard: multi-token symbols (e.g. create_user) MUST have at least
                 # 2 overlapping tokens to ensure we match Action + Entity, not just a generic noun.
-                if len(sym_toks) > 1 and len(body_overlap) < 2:
+                if len(sym_toks) > 1 and len(body_overlap) < 2 and not has_route_action_alignment:
                     continue
                         
-                score = 0.0
-                evidence = []
+                score = route_score
+                evidence = route_evidence.copy()
 
                 # 2. Symbol vs Title (High weight: 0.4)
                 title_overlap = _overlap(sym_toks, req_title_toks)
@@ -213,25 +238,6 @@ def map_code_to_requirements(
                 if file_overlap:
                     score += 0.1
                     evidence.append(f"File context '{file_base}' matches requirement text")
-
-                # 4. API Route Context (0.4 max)
-                if route:
-                    path_toks = _tokenise(route.path)
-                    path_overlap = _overlap(path_toks, req_toks)
-                    if path_overlap:
-                        score += 0.2
-                        evidence.append(f"API path '{route.path}' matches requirement text")
-                        
-                    method = route.method.upper()
-                    if method in ("POST", "PUT", "PATCH") and any(w in req_toks for w in ["create", "add", "update", "insert", "creation"]):
-                        score += 0.2
-                        evidence.append(f"HTTP {method} aligns with creation/update intent")
-                    elif method == "GET" and any(w in req_toks for w in ["list", "fetch", "get", "retrieve", "read", "listing"]):
-                        score += 0.2
-                        evidence.append(f"HTTP GET aligns with listing/fetching intent")
-                    elif method == "DELETE" and any(w in req_toks for w in ["delete", "remove"]):
-                        score += 0.2
-                        evidence.append(f"HTTP DELETE aligns with deletion intent")
 
                 final_score = min(round(score, 3), 1.0)
                 if final_score >= _MIN_SCORE:

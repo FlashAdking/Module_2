@@ -127,6 +127,8 @@ def _walk_module(module_node: ModuleNode):
 # Public API
 # ---------------------------------------------------------------------------
 
+import ast
+
 def parse_python_code(code: str, filename: str = "unknown.py") -> FileModel:
     """
     Parse Python source into a ``FileModel``.
@@ -137,6 +139,61 @@ def parse_python_code(code: str, filename: str = "unknown.py") -> FileModel:
     try:
         module_node = parse_code(code)
         classes, functions, api_routes, imports = _walk_module(module_node)
+
+        # Enhance functions with actual function call dependencies
+        try:
+            tree = ast.parse(code)
+            
+            func_calls = {}
+            class CallVisitor(ast.NodeVisitor):
+                def __init__(self):
+                    self.current_func = None
+                    self.calls = []
+                    self.class_stack = []
+                    
+                def visit_ClassDef(self, node):
+                    self.class_stack.append(node.name)
+                    self.generic_visit(node)
+                    self.class_stack.pop()
+                    
+                def visit_FunctionDef(self, node):
+                    old_func = self.current_func
+                    old_calls = self.calls
+                    
+                    func_name = f"{self.class_stack[-1]}.{node.name}" if self.class_stack else node.name
+                    self.current_func = func_name
+                    self.calls = []
+                    self.generic_visit(node)
+                    
+                    for arg in node.args.defaults + node.args.kw_defaults:
+                        if isinstance(arg, ast.Call) and getattr(arg.func, "id", "") == "Depends":
+                            if arg.args and isinstance(arg.args[0], ast.Name):
+                                self.calls.append(arg.args[0].id)
+                                
+                    func_calls[func_name] = list(set(self.calls))
+                    
+                    self.current_func = old_func
+                    self.calls = old_calls
+                    
+                def visit_AsyncFunctionDef(self, node):
+                    self.visit_FunctionDef(node)
+                    
+                def visit_Call(self, node):
+                    if self.current_func:
+                        if isinstance(node.func, ast.Name):
+                            self.calls.append(node.func.id)
+                        elif isinstance(node.func, ast.Attribute):
+                            self.calls.append(node.func.attr)
+                    self.generic_visit(node)
+                    
+            CallVisitor().visit(tree)
+            
+            for func in functions:
+                if func.name in func_calls:
+                    func.depends_on = list(set(func.depends_on + func_calls[func.name]))
+                    
+        except SyntaxError:
+            pass
 
         return FileModel(
             file=filename,

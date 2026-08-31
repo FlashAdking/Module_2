@@ -405,6 +405,7 @@ class CustomASTVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.fastapi_nodes: List[Node] = []
         self.class_stack: List[str] = []
+        self.router_prefixes: Dict[str, str] = {}
         super().__init__()
 
     # -------------------------------------------------------------------
@@ -462,12 +463,12 @@ class CustomASTVisitor(ast.NodeVisitor):
         return module_node
 
     def visit_Import(self, node: ast.Import) -> ImportNode:
-        names = [alias.name for alias in node.names]
+        names = [f"{alias.name} as {alias.asname}" if alias.asname else alias.name for alias in node.names]
         return ImportNode(names=names)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> ImportFromNode:
         module = node.module
-        names = [alias.name for alias in node.names]
+        names = [f"{alias.name} as {alias.asname}" if alias.asname else alias.name for alias in node.names]
         level = node.level
         return ImportFromNode(module=module, names=names, level=level)
 
@@ -489,6 +490,15 @@ class CustomASTVisitor(ast.NodeVisitor):
                     path = ""
                     if decorator.args and isinstance(decorator.args[0], ast.Constant):
                         path = decorator.args[0].value
+                    
+                    # Check for router prefix
+                    router_name = ""
+                    if isinstance(decorator.func.value, ast.Name):
+                        router_name = decorator.func.value.id
+                    
+                    prefix = self.router_prefixes.get(router_name, "")
+                    path = f"{prefix}{path}"
+
                     # Determine dependencies via argument annotations containing ``Depends``
                     args_list = self._parse_arguments(node.args)
                     deps = []
@@ -521,6 +531,18 @@ class CustomASTVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> AssignNode:
         targets = [self._expr_to_str(t) or "" for t in node.targets]
         value = self._expr_to_str(node.value)
+        
+        # Track APIRouter(prefix=...)
+        if isinstance(node.value, ast.Call) and getattr(node.value.func, "id", "") == "APIRouter":
+            prefix = ""
+            for kw in node.value.keywords:
+                if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+                    prefix = kw.value.value
+            if prefix:
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        self.router_prefixes[t.id] = prefix
+                        
         return AssignNode(targets=targets, value=value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> AnnAssignNode:

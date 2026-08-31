@@ -209,6 +209,9 @@ def test_map_depends_edges():
                     name="list_users", arguments=["db"],
                     decorators=["app.get"],
                     depends_on=["get_db"],
+                ),
+                FunctionModel(
+                    name="get_db", arguments=[], decorators=[], depends_on=[],
                 )
             ],
             api_routes=[], imports=[],
