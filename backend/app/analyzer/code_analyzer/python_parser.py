@@ -183,7 +183,20 @@ def parse_python_code(code: str, filename: str = "unknown.py") -> FileModel:
                         if isinstance(node.func, ast.Name):
                             self.calls.append(node.func.id)
                         elif isinstance(node.func, ast.Attribute):
-                            self.calls.append(node.func.attr)
+                            # If the receiver is a plain Name that starts with an
+                            # uppercase letter, it's almost certainly a class name
+                            # (e.g. UserService.process), so record the fully-qualified
+                            # form to disambiguate same-named methods across classes.
+                            # Lowercase receivers are instance variables (e.g.
+                            # service.create_user) — record just the method name so
+                            # the mapper can still find it via the suffix search.
+                            if (
+                                isinstance(node.func.value, ast.Name)
+                                and node.func.value.id[:1].isupper()
+                            ):
+                                self.calls.append(f"{node.func.value.id}.{node.func.attr}")
+                            else:
+                                self.calls.append(node.func.attr)
                     self.generic_visit(node)
                     
             CallVisitor().visit(tree)

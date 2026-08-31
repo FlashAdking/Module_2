@@ -4,10 +4,11 @@
 
 ```text
 codesentinel/
-├── backend/
-│   ├── app/
-│   │   ├── analyzer/
-│   │   │   ├── code_analyzer/
+.
+├── backend
+│   ├── app
+│   │   ├── analyzer
+│   │   │   ├── code_analyzer
 │   │   │   │   ├── custom_ast_parser.py
 │   │   │   │   ├── __init__.py
 │   │   │   │   ├── js_ts_parser.py
@@ -15,18 +16,33 @@ codesentinel/
 │   │   │   │   ├── python_parser.py
 │   │   │   │   └── tests
 │   │   │   ├── dependency_analyzer
-│   │   │   │   └── dependency_mapper.py
+│   │   │   │   ├── dependency_mapper.py
+│   │   │   │   └── relationship_mapper.py
 │   │   │   ├── requirement_analyzer
 │   │   │   │   └── requirement_parser.py
 │   │   │   └── system_model
-│   │   │       ├── adapter.py
-│   │   │     
+│   │   │       └── adapter.py
 │   │   └── schemas
 │   │       └── project.py
 │   └── tests
-│       └── test_analyzers.py
+│       ├── test_analyzers.py
+│       ├── test_module2_acceptance.py
+│       ├── test_module2_critical_graph.py
+│       ├── test_module2_dependencies.py
+│       ├── test_module2_dependency_real_world.py
+│       ├── test_module2_dependency_semantics.py
+│       ├── test_module2_edge_cases.py
+│       ├── test_module2_graph_invariants.py
+│       ├── test_module2_import_edge_cases.py
+│       ├── test_module2_integration.py
+│       ├── test_module2_real_world.py
+│       ├── test_module2_requirement_semantics.py
+│       ├── test_module2_stress.py
+│       └── test_module2_symbol_identity.py
 ├── README.md
 └── req.txt
+
+11 directories, 26 file
 ```
 
 ### Sample Input

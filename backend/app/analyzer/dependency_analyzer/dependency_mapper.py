@@ -250,7 +250,10 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                     # to avoid pointing at an unrelated same-named function.
                     if not target_file and not found_in_imports:
                         if dep in all_funcs_map:
+                            # Direct match: plain function name or fully-qualified
+                            # Class.method recorded by the AST visitor.
                             target_file = all_funcs_map[dep]
+                            target_func_name = dep
                         else:
                             for class_method, file_path in all_funcs_map.items():
                                 if class_method.endswith(f".{dep}"):
