@@ -43,7 +43,7 @@ def parse_js_ts_code(code: str, filename: str, language_str: str = 'javascript')
     api_routes: List[ApiRouteModel] = []
     imports: List[str] = []
 
-    def traverse(node):
+    def traverse(node, current_class=None):
         if node.type == 'import_statement':
             # Extract only the module specifier (the string after 'from'), not the full raw line.
             # e.g. "import React from 'react'" → "react"
@@ -57,19 +57,49 @@ def parse_js_ts_code(code: str, filename: str, language_str: str = 'javascript')
                 imports.append(extract_node_text(node, source_bytes))
         
         elif node.type == 'class_declaration':
+            class_name = "AnonymousClass"
             name_node = node.child_by_field_name('name')
-            class_name = extract_node_text(name_node, source_bytes) if name_node else "AnonymousClass"
+            if name_node:
+                class_name = extract_node_text(name_node, source_bytes)
             
             methods = []
-            body = node.child_by_field_name('body')
-            if body:
-                for child in body.children:
+            body_node = node.child_by_field_name('body')
+            if body_node:
+                for child in body_node.children:
                     if child.type == 'method_definition':
                         method_name_node = child.child_by_field_name('name')
                         if method_name_node:
-                            methods.append(extract_node_text(method_name_node, source_bytes))
+                            method_name = extract_node_text(method_name_node, source_bytes)
+                            methods.append(method_name)
+                            
+                            # Parse arguments for the method
+                            arguments = []
+                            params_node = child.child_by_field_name('parameters')
+                            if params_node and params_node.type == 'formal_parameters':
+                                for p_child in params_node.children:
+                                    if p_child.type == 'identifier':
+                                        arguments.append(extract_node_text(p_child, source_bytes))
+                                    elif p_child.type in ['required_parameter', 'optional_parameter']:
+                                        ident = next((c for c in p_child.children if c.type == 'identifier'), None)
+                                        if ident:
+                                            arguments.append(extract_node_text(ident, source_bytes))
+                                    elif p_child.type in ['array_pattern', 'object_pattern']:
+                                        arguments.append("<pattern>")
+                            
+                            # Emit canonical method name in functions list
+                            functions.append(FunctionModel(
+                                name=f"{class_name}.{method_name}",
+                                arguments=arguments,
+                                decorators=[]
+                            ))
+                            
             classes.append(ClassModel(name=class_name, methods=methods))
             
+            # Recurse with class context (though JS/TS nested classes are rare)
+            for child in node.children:
+                traverse(child, current_class=class_name)
+            return
+        
         elif node.type in ['function_declaration', 'arrow_function']:
             name = "AnonymousFunction"
             if node.type == 'function_declaration':
@@ -120,7 +150,7 @@ def parse_js_ts_code(code: str, filename: str, language_str: str = 'javascript')
         # api_routes remains empty for all JS/TS files.
         
         for child in node.children:
-            traverse(child)
+            traverse(child, current_class)
 
     try:
         traverse(tree.root_node)

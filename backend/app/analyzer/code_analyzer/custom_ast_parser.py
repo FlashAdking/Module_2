@@ -404,6 +404,7 @@ class CustomASTVisitor(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.fastapi_nodes: List[Node] = []
+        self.class_stack: List[str] = []
         super().__init__()
 
     # -------------------------------------------------------------------
@@ -473,10 +474,13 @@ class CustomASTVisitor(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> ClassDefNode:
         bases = [self._expr_to_str(b) or "" for b in node.bases]
         decorators = [self._expr_to_str(d) or "" for d in node.decorator_list]
+        self.class_stack.append(node.name)
         body = [self.visit(stmt) for stmt in node.body]
+        self.class_stack.pop()
         return ClassDefNode(name=node.name, bases=bases, decorators=decorators, children=body)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> FunctionDefNode:
+        func_name = f"{self.class_stack[-1]}.{node.name}" if self.class_stack else node.name
         # FastAPI route detection
         for decorator in node.decorator_list:
             if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
@@ -494,7 +498,7 @@ class CustomASTVisitor(ast.NodeVisitor):
                     route_node = FastAPIRouteNode(
                         path=path,
                         method=method,
-                        function_name=node.name,
+                        function_name=func_name,
                         dependencies=deps,
                     )
                     self.fastapi_nodes.append(route_node)

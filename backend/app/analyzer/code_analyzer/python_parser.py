@@ -88,6 +88,13 @@ def _walk_module(module_node: ModuleNode):
             for body_child in child.children:
                 if isinstance(body_child, FunctionDefNode):
                     methods.append(body_child.name)
+                    # Emit class method as a canonical top-level function to capture metadata
+                    functions.append(FunctionModel(
+                        name=f"{child.name}.{body_child.name}",
+                        arguments=[a.arg for a in body_child.args],
+                        decorators=body_child.decorators,
+                        depends_on=_depends_from_args(body_child.args),
+                    ))
             classes.append(ClassModel(name=child.name, methods=methods))
 
         # ── Top-level functions ───────────────────────────────────────────

@@ -214,7 +214,7 @@ def test_module2_end_to_end_contract(realistic_project):
 
     assert (
         "app/main.py",
-        "app.services.user",
+        "app.services.user.UserService",
         "app/services/user.py",
     ) in internal_dependencies
 

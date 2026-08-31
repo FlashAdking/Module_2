@@ -157,11 +157,10 @@ def map_code_to_requirements(
             if cls.name not in seen_names:
                 symbols.append((cls.name, "class"))
                 seen_names.add(cls.name)
-            for method in cls.methods:
-                compound = f"{cls.name}.{method}"
-                if compound not in seen_names:
-                    symbols.append((compound, "function"))
-                    seen_names.add(compound)
+            # We NO LONGER blindly construct f"{cls.name}.{method}" here.
+            # The parsers now emit class methods directly into f.functions
+            # with their canonical names (e.g. 'UserService.create_user'),
+            # preserving their arguments, decorators, and metadata.
 
         for func in f.functions:
             if func.name not in seen_names:
@@ -285,9 +284,7 @@ def map_code_to_tests(files: List[FileModel]) -> List[CodeTestLink]:
             continue
         for cls in f.classes:
             prod_symbols.append((f.file, cls.name, "class", _symbol_tokens(cls.name)))
-            for method in cls.methods:
-                # For matching, we match against the method name tokens
-                prod_symbols.append((f.file, method, "function", _symbol_tokens(method)))
+            # No longer iterating cls.methods here, as they are part of f.functions
         for func in f.functions:
             prod_symbols.append((f.file, func.name, "function", _symbol_tokens(func.name)))
 

@@ -31,11 +31,16 @@ def _build_module_index(files: List[FileModel]) -> Dict[str, str]:
             index[without_ext[:-6]] = f.file
 
         # 2. Dotted lookup (Python)
-        dotted = without_ext.replace("/", ".")
-        index[dotted] = f.file
-        # Map app.services.__init__ to app.services
-        if dotted.endswith(".__init__"):
-            index[dotted[:-9]] = f.file
+        # Register all suffix paths to handle cases where the project root (e.g. 'backend')
+        # is not part of the import string (e.g. 'app.services.user').
+        parts = without_ext.split("/")
+        for i in range(len(parts)):
+            suffix_dotted = ".".join(parts[i:])
+            if suffix_dotted not in index:
+                index[suffix_dotted] = f.file
+            # Map app.services.__init__ to app.services
+            if suffix_dotted.endswith(".__init__"):
+                index[suffix_dotted[:-9]] = f.file
 
     return index
 
@@ -45,26 +50,62 @@ def _resolve_import(imp: str, source_file: str, module_index: Dict[str, str]) ->
     Returns (kind, resolved_file, target_module).
     kind = "INTERNAL" if the import matches a project file, "EXTERNAL" otherwise.
     """
-    # 1. JS/TS Relative imports
+    # 1. Relative imports (Python and JS/TS)
     if imp.startswith("."):
-        source_dir = os.path.dirname(source_file).replace("\\", "/")
-        resolved_path = os.path.normpath(os.path.join(source_dir, imp)).replace("\\", "/")
-        resolved_path = resolved_path.rstrip("/")
+        # Count leading dots
+        dots = 0
+        for c in imp:
+            if c == ".":
+                dots += 1
+            else:
+                break
         
+        # Calculate parent directory based on dots
+        # '.' means current dir, '..' means parent dir, etc.
+        # But wait! If the file is `backend/app/services/order.py`:
+        # dirname is `backend/app/services`.
+        # '.' -> backend/app/services
+        # '..' -> backend/app
+        source_dir = os.path.dirname(source_file).replace("\\", "/")
+        dir_parts = source_dir.split("/")
+        
+        # JS/TS relative imports use slashes: "../services/user"
+        # Python relative imports use dots: "..services.user"
+        if "/" in imp:
+            # JS/TS style
+            resolved_path = os.path.normpath(os.path.join(source_dir, imp)).replace("\\", "/")
+            resolved_path = resolved_path.rstrip("/")
+        else:
+            # Python style
+            # pop directories for dots > 1
+            if dots > 1:
+                pops = dots - 1
+                if pops <= len(dir_parts):
+                    dir_parts = dir_parts[:-pops]
+                else:
+                    dir_parts = []
+                    
+            base_dir = "/".join(dir_parts)
+            remainder = imp[dots:].replace(".", "/")
+            resolved_path = os.path.normpath(f"{base_dir}/{remainder}").replace("\\", "/") if remainder else base_dir
+            
         if resolved_path in module_index:
             return "INTERNAL", module_index[resolved_path], imp
+        if f"{resolved_path}/__init__" in module_index:
+            return "INTERNAL", module_index[f"{resolved_path}/__init__"], imp
         if f"{resolved_path}/index" in module_index:
             return "INTERNAL", module_index[f"{resolved_path}/index"], imp
+            
         return "EXTERNAL", "", imp
 
-    # 2. Python dotted imports
+    # 3. Python dotted imports
     parts = imp.split(".")
     for length in range(len(parts), 0, -1):
         candidate = ".".join(parts[:length])
         if candidate in module_index:
-            # Return the matched module path (without trailing symbol names)
-            # so "app.services.user.UserService" → candidate "app.services.user"
-            return "INTERNAL", module_index[candidate], candidate
+            # Return imp as target_module so we don't truncate the class name
+            return "INTERNAL", module_index[candidate], imp
+            
     return "EXTERNAL", "", imp
 
 
@@ -118,6 +159,14 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
     edges: List[DependsEdge] = []
     seen: Set[tuple] = set()
 
+    # Pre-build a map of all functions to their source file
+    all_funcs_map: Dict[str, str] = {}
+    for file_model in files:
+        for func in file_model.functions:
+            all_funcs_map[func.name] = file_model.file
+
+    module_index = _build_module_index(files)
+
     for f in files:
         for func in f.functions:
             for dep in func.depends_on:
@@ -125,9 +174,29 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                 if key in seen:
                     continue
                 seen.add(key)
+                
+                target_file = None
+                
+                # 1. Check if the dependency is defined in the same file
+                if any(fn.name == dep for fn in f.functions):
+                    target_file = f.file
+                else:
+                    # 2. Check if the dependency is imported
+                    for imp in f.imports:
+                        if imp.endswith(f".{dep}") or imp == dep:
+                            kind, resolved, target_mod = _resolve_import(imp, f.file, module_index)
+                            if kind == "INTERNAL" and resolved:
+                                target_file = resolved
+                                break
+                    
+                    # 3. Fallback: Check if it's defined globally somewhere else
+                    if not target_file and dep in all_funcs_map:
+                        target_file = all_funcs_map[dep]
+
                 edges.append(DependsEdge(
                     source_file=f.file,
                     source_function=func.name,
+                    target_file=target_file,
                     target_function=dep,
                 ))
 

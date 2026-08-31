@@ -54,6 +54,7 @@ class DependsEdge(BaseModel):
     """A FastAPI Depends() injection relationship between two functions."""
     source_file: str
     source_function: str
+    target_file: Optional[str] = None
     target_function: str
 
 class CodeRequirementLink(BaseModel):

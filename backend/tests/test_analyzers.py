@@ -192,8 +192,8 @@ def test_map_dependencies_internal():
     internal = [e for e in edges if e.kind == "INTERNAL"]
     external = [e for e in edges if e.kind == "EXTERNAL"]
 
-    # INTERNAL: target_module is the matched module path, not the full symbol
-    assert any(e.target_module == "app.models.user" for e in internal)
+    # INTERNAL: target_module should retain the full import string (Priority 3)
+    assert any(e.target_module == "app.models.user.SomeClass" for e in internal)
     # EXTERNAL: target_module is the full import string as-is
     assert any(e.target_module == "fastapi.FastAPI" for e in external)
 
@@ -273,3 +273,57 @@ def test_code_to_tests_link():
     target_symbols = {l.target_symbol for l in links}
     assert "create_user" in target_symbols
     assert "list_users" in target_symbols
+
+
+def test_python_relative_imports():
+    from app.schemas.project import FileModel
+    files = [
+        FileModel(
+            file="backend/app/api/users.py", language="python",
+            classes=[], functions=[], api_routes=[],
+            imports=[".models", "..services.user.UserService", "fastapi"],
+        ),
+        FileModel(
+            file="backend/app/api/models.py", language="python",
+            classes=[], functions=[], api_routes=[], imports=[],
+        ),
+        FileModel(
+            file="backend/app/services/user.py", language="python",
+            classes=[], functions=[], api_routes=[], imports=[],
+        ),
+    ]
+    edges = map_dependencies(files)
+    
+    internal = [e for e in edges if e.kind == "INTERNAL"]
+    
+    # Assert .models resolves to backend/app/api/models.py
+    assert any(e.target_module == ".models" and e.resolved_file == "backend/app/api/models.py" for e in internal)
+    # Assert ..services.user.UserService resolves to backend/app/services/user.py
+    assert any(e.target_module == "..services.user.UserService" and e.resolved_file == "backend/app/services/user.py" for e in internal)
+
+
+def test_typescript_resolution():
+    from app.schemas.project import FileModel
+    files = [
+        FileModel(
+            file="frontend/src/components/UserList.tsx", language="typescript",
+            classes=[], functions=[], api_routes=[],
+            imports=["../services/api", "./Button", "react"],
+        ),
+        FileModel(
+            file="frontend/src/services/api/index.ts", language="typescript",
+            classes=[], functions=[], api_routes=[], imports=[],
+        ),
+        FileModel(
+            file="frontend/src/components/Button.tsx", language="typescript",
+            classes=[], functions=[], api_routes=[], imports=[],
+        ),
+    ]
+    edges = map_dependencies(files)
+    
+    internal = [e for e in edges if e.kind == "INTERNAL"]
+    external = [e for e in edges if e.kind == "EXTERNAL"]
+    
+    assert any(e.target_module == "../services/api" and e.resolved_file == "frontend/src/services/api/index.ts" for e in internal)
+    assert any(e.target_module == "./Button" and e.resolved_file == "frontend/src/components/Button.tsx" for e in internal)
+    assert any(e.target_module == "react" for e in external)
