@@ -89,12 +89,16 @@ def _resolve_import(imp: str, source_file: str, module_index: Dict[str, str]) ->
             remainder = imp[dots:].replace(".", "/")
             resolved_path = os.path.normpath(f"{base_dir}/{remainder}").replace("\\", "/") if remainder else base_dir
             
-        if resolved_path in module_index:
-            return "INTERNAL", module_index[resolved_path], imp
-        if f"{resolved_path}/__init__" in module_index:
-            return "INTERNAL", module_index[f"{resolved_path}/__init__"], imp
-        if f"{resolved_path}/index" in module_index:
-            return "INTERNAL", module_index[f"{resolved_path}/index"], imp
+        # Try to match the resolved path. If it contains symbols at the end, pop them off.
+        path_parts = resolved_path.split("/")
+        for length in range(len(path_parts), 0, -1):
+            candidate_path = "/".join(path_parts[:length])
+            if candidate_path in module_index:
+                return "INTERNAL", module_index[candidate_path], imp
+            if f"{candidate_path}/__init__" in module_index:
+                return "INTERNAL", module_index[f"{candidate_path}/__init__"], imp
+            if f"{candidate_path}/index" in module_index:
+                return "INTERNAL", module_index[f"{candidate_path}/index"], imp
             
         return "EXTERNAL", "", imp
 

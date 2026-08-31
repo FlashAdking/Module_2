@@ -79,8 +79,12 @@ def _walk_module(module_node: ModuleNode):
 
         elif isinstance(child, ImportFromNode):
             module = child.module or ""
+            prefix = "." * (child.level or 0)
             for name in child.names:
-                imports.append(f"{module}.{name}" if module else name)
+                if module:
+                    imports.append(f"{prefix}{module}.{name}")
+                else:
+                    imports.append(f"{prefix}{name}")
 
         # ── Classes ───────────────────────────────────────────────────────
         elif isinstance(child, ClassDefNode):
