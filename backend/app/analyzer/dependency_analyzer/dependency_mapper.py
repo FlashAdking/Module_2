@@ -202,7 +202,8 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
     and returns one edge per (caller_function → injected_function) pair.
     """
     edges: List[DependsEdge] = []
-    seen: Set[tuple] = set()
+    seen: Set[tuple] = set()          # dedup by alias
+    resolved_seen: Set[tuple] = set() # dedup by resolved target
 
     # Pre-build a map of all functions to their source file
     all_funcs_map: Dict[str, str] = {}
@@ -228,11 +229,13 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                     target_file = f.file
                 else:
                     # 2. Check if the dependency is imported
+                    found_in_imports = False
                     for imp in f.imports:
                         parts = imp.split(" as ")
                         alias = parts[1].strip() if len(parts) > 1 else parts[0].split(".")[-1]
                         real_imp = parts[0].strip()
                         if alias == dep:
+                            found_in_imports = True
                             kind, resolved, target_mod = _resolve_import(real_imp, f.file, module_index)
                             if kind == "INTERNAL" and resolved:
                                 # Follow re-export chains through __init__.py
@@ -241,8 +244,11 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                                 target_func_name = real_imp.split(".")[-1]
                                 break
                     
-                    # 3. Fallback: Check if it's defined globally somewhere else
-                    if not target_file:
+                    # 3. Fallback: Check if it's defined globally somewhere else.
+                    # Only use this if the dep was NOT found in any import — if it
+                    # was imported (even from an EXTERNAL module), skip the fallback
+                    # to avoid pointing at an unrelated same-named function.
+                    if not target_file and not found_in_imports:
                         if dep in all_funcs_map:
                             target_file = all_funcs_map[dep]
                         else:
@@ -255,6 +261,11 @@ def map_depends_edges(files: List[FileModel]) -> List[DependsEdge]:
                 # Ignore external builtins or unknown functions that we cannot resolve internally
                 if not target_file:
                     continue
+
+                resolved_key = (f.file, func.name, target_file, target_func_name)
+                if resolved_key in resolved_seen:
+                    continue
+                resolved_seen.add(resolved_key)
 
                 edges.append(DependsEdge(
                     source_file=f.file,
