@@ -36,10 +36,9 @@ _STOP_WORDS: Set[str] = {
     # they are high-signal tokens in code symbol names (create_user, UserService…)
 }
 
-_MIN_SCORE = 0.6  # minimum keyword overlap ratio to record a link
-                  # 0.6 requires ≥60% of symbol tokens to match the requirement,
-                  # preventing weak single-token matches (e.g. "user" alone)
-
+_MIN_SCORE = 0.15  # minimum keyword overlap ratio to record a link
+                   # We now use strict rule-based guards (e.g. Action + Entity)
+                   # so we don't rely purely on a high threshold.
 
 def _tokenise(text: str) -> Set[str]:
     """Lower-case, split on non-alphanumeric chars, remove stop words."""
@@ -89,13 +88,27 @@ def _camel_to_tokens(name: str) -> Set[str]:
     """Split camelCase / snake_case / PascalCase into token set."""
     # Insert space before uppercase letters that follow lowercase letters
     spaced = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name)
-    # Split on underscores and spaces
-    parts = re.split(r'[_\s]+', spaced)
+    # Split on underscores, spaces, and dots
+    parts = re.split(r'[_\s\.]+', spaced)
     return {p.lower() for p in parts if p and p.lower() not in _STOP_WORDS and len(p) > 2}
 
 
 def _symbol_tokens(symbol_name: str) -> Set[str]:
-    return _camel_to_tokens(symbol_name)
+    raw_toks = _camel_to_tokens(symbol_name)
+    final: Set[str] = set()
+    for t in raw_toks:
+        matched = False
+        for f in list(final):
+            if _tokens_match(t, f):
+                matched = True
+                # Keep the shorter token as the stem
+                if len(t) < len(f):
+                    final.remove(f)
+                    final.add(t)
+                break
+        if not matched:
+            final.add(t)
+    return final
 
 
 def _req_title_tokens(req: RequirementModel) -> Set[str]:
@@ -167,23 +180,30 @@ def map_code_to_requirements(
                 req_title_toks = req_title_cache[req.requirement_id]
                 
                 # Guard: single-token symbols (e.g. class User) must match title.
+                # Guard: single-token symbols (e.g. class User) must match title exactly.
                 if len(sym_toks) == 1:
                     tok = next(iter(sym_toks))
                     if not _overlap({tok}, req_title_toks):
                         continue
                         
+                # 1. Symbol vs Body
+                body_overlap = _overlap(sym_toks, req_toks)
+                
+                # Guard: multi-token symbols (e.g. create_user) MUST have at least
+                # 2 overlapping tokens to ensure we match Action + Entity, not just a generic noun.
+                if len(sym_toks) > 1 and len(body_overlap) < 2:
+                    continue
+                        
                 score = 0.0
                 evidence = []
 
-                # 1. Symbol vs Title (High weight: 0.4)
+                # 2. Symbol vs Title (High weight: 0.4)
                 title_overlap = _overlap(sym_toks, req_title_toks)
                 if title_overlap:
                     ratio = len(title_overlap) / len(sym_toks)
                     score += ratio * 0.4
                     evidence.append(f"Symbol '{symbol_name}' shares {len(title_overlap)} token(s) with requirement title")
 
-                # 2. Symbol vs Body (Medium weight: 0.4)
-                body_overlap = _overlap(sym_toks, req_toks)
                 if body_overlap:
                     ratio = len(body_overlap) / len(sym_toks)
                     score += ratio * 0.4
