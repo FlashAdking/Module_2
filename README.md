@@ -63,6 +63,8 @@ To generate the system model, call `process_project()` with three inputs:
 ```python
 from app.analyzer.system_model.adapter import process_project
 
+# path : /backend/app/analyzer/system_model/adapter.py
+
 process_project(
     profile_json,
     file_contents,
